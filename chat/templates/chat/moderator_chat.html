@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Title</title>
+</head>
+<body>
+
+<input id="connect" type="submit" value="кнопка">
+<script>
+    var ChatSocket;
+    document.querySelector("#connect").onclick = function(e){
+        if(!ChatSocket) {
+            ChatSocket = new WebSocket(
+                'ws://'
+                + window.location.host
+                + '/ws/moderator_chat/'
+            )
+            console.log("puk")
+        }
+    }
+</script>
+
+</body>
+</html>

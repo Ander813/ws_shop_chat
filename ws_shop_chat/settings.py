@@ -69,6 +69,8 @@ CHANNEL_LAYERS = {
         },
     },
 }
+REDIS_HOST = 'localhost'
+REDIS_PORT = 6379
 
 
 # Database
@@ -113,6 +115,8 @@ USE_I18N = True
 USE_L10N = True
 
 USE_TZ = True
+
+os.environ["DJANGO_ALLOW_ASYNC_UNSAFE"] = "true"
 
 
 # Static files (CSS, JavaScript, Images)
