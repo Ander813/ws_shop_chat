@@ -5,6 +5,8 @@ import redis
 from django.conf import settings
 import json
 
+from django.contrib.auth.models import AnonymousUser
+
 from chat.models import Chats, Messages
 
 redis_instance = redis.StrictRedis(host=settings.REDIS_HOST,
@@ -12,7 +14,7 @@ redis_instance = redis.StrictRedis(host=settings.REDIS_HOST,
                                    db=0)
 
 
-class CustomAsyncWebsocketConsumer(AsyncWebsocketConsumer):
+class BaseChatConsumer(AsyncWebsocketConsumer):
 
     async def group_add(self, room_name, channel_name):
         await self.channel_layer.group_add(
@@ -27,16 +29,24 @@ class CustomAsyncWebsocketConsumer(AsyncWebsocketConsumer):
         )
 
     async def fetch_messages(self, data):
-        room_ip = data['room_name'].split(':')[-1]
+        room_ip = data['room_name'].split('_')[-1]
         messages = await database_sync_to_async(Chats.get_messages)(room_ip)
         messages_json = {"messages": await self.messages_to_json(messages)}
 
         await self.send_message(messages_json)
 
     async def new_message(self, data):
-        chat = Chats.objects.get(chat_room=data['room_name'].split(':')[-1])
-        message = chat.messages.create(sender=self.scope['user'], 
-                                       content=data['message'])
+        chat, _ = await database_sync_to_async(
+            Chats.objects.get_or_create(chat_room=data['room_name'].split('_')[-1]))
+        if self.scope['user'].is_anonymous:
+            message = await database_sync_to_async(
+                chat.messages.create(sender=None,
+                                     content=data['message']))
+        else:
+            message = await database_sync_to_async(
+                chat.messages.create(sender=self.scope['user'],
+                                     content=data['message']))
+
         content = {'room_name': data['room_name'],
                    'message': await self.message_to_json(message)}
         await self.send_chat_message(content)
@@ -53,7 +63,7 @@ class CustomAsyncWebsocketConsumer(AsyncWebsocketConsumer):
         return {
             'content': message.content,
             'sent': str(message.sent),
-            'sender': message.sender.username
+            'sender': message.sender.username if not self.scope['user'].is_anonymous else None
         }
 
     async def send_chat_message(self, data):
@@ -65,16 +75,16 @@ class CustomAsyncWebsocketConsumer(AsyncWebsocketConsumer):
             }
         )
 
-    commands = {
-        'fetch_messages': fetch_messages,
-        'send_message': new_message,
-    }
-
     async def send_message(self, message):
         await self.send(text_data=json.dumps(message))
 
+    commands = {
+        'fetch_messages': fetch_messages,
+        'new_message': new_message,
+    }
 
-class ChatConsumer(CustomAsyncWebsocketConsumer):
+
+class ChatConsumer(BaseChatConsumer):
 
     async def get_moderators_list(self):
         encoded_moderators_list = await sync_to_async(redis_instance.lrange) \
@@ -83,7 +93,7 @@ class ChatConsumer(CustomAsyncWebsocketConsumer):
                         encoded_moderators_list))
 
     async def connect(self):
-        ip = str(self.scope['client'][0]) + str(self.scope['client'][1])
+        ip = self.scope['client'][0]
         self.room_name = f"chat_{ip}"
         await self.group_add(self.room_name, self.channel_name)
         self.moderators_list = await self.get_moderators_list()
@@ -111,18 +121,17 @@ class ChatConsumer(CustomAsyncWebsocketConsumer):
 
     async def receive(self, text_data):
         data_json = json.loads(text_data)
-        message = data_json['message']
 
-        await self.fetch_messages({'room_name': '127.0.0.1'})
+        try:
+            command_func = self.commands[data_json['command']]
+        except KeyError:
+            command_func = None
 
-        """await self.channel_layer.group_send(
-            self.room_name,
-            {
-                "type": 'chat.message',
+        if command_func:
+            await command_func(self, {
                 "room_name": self.room_name,
-                "message": message,
-            }
-        )"""
+                "message": data_json['message']
+            })
 
     async def chat_message(self, event):
         await self.send(text_data=json.dumps({
@@ -130,7 +139,7 @@ class ChatConsumer(CustomAsyncWebsocketConsumer):
         }))
 
 
-class ModeratorChatConsumer(CustomAsyncWebsocketConsumer):
+class ModeratorChatConsumer(BaseChatConsumer):
     room_group_names = []
     moderators_key = 'chat:moderators'
 
@@ -157,9 +166,17 @@ class ModeratorChatConsumer(CustomAsyncWebsocketConsumer):
 
     async def receive(self, text_data):
         data_json = json.loads(text_data)
-        message = data_json['message']
 
-        await self.fetch_messages({'room_name': '127.0.0.1'})
+        try:
+            command_func = self.commands[data_json['command']]
+        except KeyError:
+            command_func = None
+
+        if command_func:
+            await command_func(self, {
+                "room_name": data_json['room_name'],
+                'message': data_json['message']
+            })
 
     async def chat_message(self, event):
         await self.send(text_data=json.dumps({
