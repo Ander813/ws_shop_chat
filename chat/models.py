@@ -24,4 +24,4 @@ class Messages(models.Model):
     content = models.TextField()
     sent = models.DateTimeField(auto_now_add=True)
     chat = models.ForeignKey(Chats, related_name='messages', on_delete=models.CASCADE)
-    sender = models.ForeignKey(User, related_name='user_massages', on_delete=models.CASCADE)
+    sender = models.ForeignKey(User, related_name='user_massages', on_delete=models.CASCADE, null=True)
