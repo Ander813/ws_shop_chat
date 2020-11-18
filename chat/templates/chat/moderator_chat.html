@@ -6,7 +6,9 @@
 </head>
 <body>
 
-<input id="connect" type="submit" value="кнопка">
+<input id="connect" type="submit" value="connect">
+<input id="chat-message" type="text" size="100">
+<input id="submit" type="button" value="send">
 <script>
     var ChatSocket;
     document.querySelector("#connect").onclick = function(e){
@@ -22,6 +24,23 @@
             console.log(e)
         }
     }
+    document.querySelector('#chat-message').focus();
+        document.querySelector('#chat-message').onkeyup = function(e) {
+            if (e.keyCode === 13) {
+                document.querySelector('submit').click();
+            }
+        };
+
+        document.querySelector('#submit').onclick = function(e) {
+            const messageInputDom = document.querySelector('#chat-message');
+            const message = messageInputDom.value;
+            ChatSocket.send(JSON.stringify({
+                'message': message,
+                'command': 'new_message',
+                'room_name': 'chat_127.0.0.1'
+            }));
+            messageInputDom.value = '';
+        };
 
 </script>
 

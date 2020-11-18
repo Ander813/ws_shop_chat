@@ -5,7 +5,6 @@ import redis
 from django.conf import settings
 import json
 
-from django.contrib.auth.models import AnonymousUser
 
 from chat.models import Chats, Messages
 
@@ -37,15 +36,15 @@ class BaseChatConsumer(AsyncWebsocketConsumer):
 
     async def new_message(self, data):
         chat, _ = await database_sync_to_async(
-            Chats.objects.get_or_create(chat_room=data['room_name'].split('_')[-1]))
+            Chats.objects.get_or_create)(chat_room=data['room_name'].split('_')[-1])
         if self.scope['user'].is_anonymous:
             message = await database_sync_to_async(
-                chat.messages.create(sender=None,
-                                     content=data['message']))
+                chat.messages.create)(sender=None,
+                                     content=data['message'])
         else:
             message = await database_sync_to_async(
-                chat.messages.create(sender=self.scope['user'],
-                                     content=data['message']))
+                chat.messages.create)(sender=self.scope['user'],
+                                     content=data['message'])
 
         content = {'room_name': data['room_name'],
                    'message': await self.message_to_json(message)}
@@ -140,16 +139,14 @@ class ChatConsumer(BaseChatConsumer):
 
 
 class ModeratorChatConsumer(BaseChatConsumer):
-    room_group_names = []
     moderators_key = 'chat:moderators'
 
     async def connect(self):
         self.user = self.scope['user']
         if await database_sync_to_async(self.user.groups.filter)(name="moderator"):
-            for group in redis_instance.scan_iter("asgi:group:*"):
+            for group in await sync_to_async(redis_instance.scan_iter)("asgi:group:*"):
                 group = group.decode('utf-8').split(':')[-1]
                 await self.group_add(group, self.channel_name)
-                self.room_group_names.append(group)
 
             await self.accept()
 
@@ -159,7 +156,8 @@ class ModeratorChatConsumer(BaseChatConsumer):
             await self.close(code=403)
 
     async def disconnect(self, close_code):
-        for group in self.room_group_names:
+        for group in await sync_to_async(redis_instance.scan_iter)("asgi:group:*"):
+            group = group.decode('utf-8').split(':')[-1]
             await self.group_discard(group, self.channel_name)
         await sync_to_async(redis_instance.lrem) \
             (self.moderators_key, 0, self.channel_name)
