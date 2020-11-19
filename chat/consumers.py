@@ -1,12 +1,15 @@
+from json.decoder import JSONDecodeError
+
 from asgiref.sync import sync_to_async
 from channels.db import database_sync_to_async
 from channels.generic.websocket import AsyncWebsocketConsumer
 import redis
 from django.conf import settings
 import json
+import time
 
 
-from chat.models import Chats, Messages
+from chat.models import Chats, EmailMessages
 
 redis_instance = redis.StrictRedis(host=settings.REDIS_HOST,
                                    port=settings.REDIS_PORT,
@@ -14,6 +17,13 @@ redis_instance = redis.StrictRedis(host=settings.REDIS_HOST,
 
 
 class BaseChatConsumer(AsyncWebsocketConsumer):
+    moderators_key = 'chat:moderators'
+
+    async def get_moderators_list(self):
+        encoded_moderators_list = await sync_to_async(redis_instance.lrange) \
+            (self.moderators_key, 0, -1)
+        return list(map(lambda x: x.decode('utf-8'),
+                        encoded_moderators_list))
 
     async def group_add(self, room_name, channel_name):
         await self.channel_layer.group_add(
@@ -35,20 +45,42 @@ class BaseChatConsumer(AsyncWebsocketConsumer):
         await self.send_message(messages_json)
 
     async def new_message(self, data):
+        if await self.get_moderators_list():
+            message = await self.create_new_message_db(data)
+
+            content = {'room_name': data['room_name'],
+                       'message': await self.message_to_json(message)}
+            await self.send_chat_message(content)
+        else:
+            await self.new_email_message(data)
+
+    async def create_new_message_db(self, data):
         chat, _ = await database_sync_to_async(
             Chats.objects.get_or_create)(chat_room=data['room_name'].split('_')[-1])
         if self.scope['user'].is_anonymous:
             message = await database_sync_to_async(
                 chat.messages.create)(sender=None,
-                                     content=data['message'])
+                                      content=data['message'])
         else:
             message = await database_sync_to_async(
                 chat.messages.create)(sender=self.scope['user'],
-                                     content=data['message'])
+                                      content=data['message'])
+        return message
 
-        content = {'room_name': data['room_name'],
-                   'message': await self.message_to_json(message)}
-        await self.send_chat_message(content)
+    async def new_email_message(self, data):
+        try:
+            message = await database_sync_to_async(
+                EmailMessages.objects.create)(email=data['email'],
+                                             content=data['message'])
+            await self.send_message({
+                "message": {
+                    "sent": time.time(),
+                    "sender": "System",
+                    "content": "Thank you for your message, we will reply as soon as we can"
+                }
+            })
+        except KeyError:
+            await self.send_message({'error': 'no email'})
 
     async def messages_to_json(self, messages):
         messages_list = []
@@ -80,27 +112,22 @@ class BaseChatConsumer(AsyncWebsocketConsumer):
     commands = {
         'fetch_messages': fetch_messages,
         'new_message': new_message,
+        'email_message': new_email_message,
     }
 
 
 class ChatConsumer(BaseChatConsumer):
 
-    async def get_moderators_list(self):
-        encoded_moderators_list = await sync_to_async(redis_instance.lrange) \
-            ('chat:moderators', 0, -1)
-        return list(map(lambda x: x.decode('utf-8'),
-                        encoded_moderators_list))
-
     async def connect(self):
         ip = self.scope['client'][0]
         self.room_name = f"chat_{ip}"
         await self.group_add(self.room_name, self.channel_name)
-        self.moderators_list = await self.get_moderators_list()
+        moderators_list = await self.get_moderators_list()
 
         await self.accept()
 
-        if self.moderators_list:
-            for moderator in self.moderators_list:
+        if moderators_list:
+            for moderator in moderators_list:
                 await self.group_add(self.room_name, moderator)
             await self.send(text_data=json.dumps({
                 "message": "Hi, any questions?"
@@ -114,12 +141,15 @@ class ChatConsumer(BaseChatConsumer):
             }))
 
     async def disconnect(self, close_code):
-        for moderator in self.moderators_list:
+        for moderator in await self.get_moderators_list():
             await self.group_discard(self.room_name, moderator)
         await self.group_discard(self.room_name, self.channel_name)
 
     async def receive(self, text_data):
-        data_json = json.loads(text_data)
+        try:
+            data_json = json.loads(text_data)
+        except JSONDecodeError:
+            data_json = None
 
         try:
             command_func = self.commands[data_json['command']]
@@ -127,10 +157,8 @@ class ChatConsumer(BaseChatConsumer):
             command_func = None
 
         if command_func:
-            await command_func(self, {
-                "room_name": self.room_name,
-                "message": data_json['message']
-            })
+            data_json['room_name'] = self.room_name
+            await command_func(self, data_json)
 
     async def chat_message(self, event):
         await self.send(text_data=json.dumps({
@@ -139,7 +167,6 @@ class ChatConsumer(BaseChatConsumer):
 
 
 class ModeratorChatConsumer(BaseChatConsumer):
-    moderators_key = 'chat:moderators'
 
     async def connect(self):
         self.user = self.scope['user']
@@ -163,7 +190,10 @@ class ModeratorChatConsumer(BaseChatConsumer):
             (self.moderators_key, 0, self.channel_name)
 
     async def receive(self, text_data):
-        data_json = json.loads(text_data)
+        try:
+            data_json = json.loads(text_data)
+        except JSONDecodeError:
+            data_json = None
 
         try:
             command_func = self.commands[data_json['command']]
@@ -171,10 +201,7 @@ class ModeratorChatConsumer(BaseChatConsumer):
             command_func = None
 
         if command_func:
-            await command_func(self, {
-                "room_name": data_json['room_name'],
-                'message': data_json['message']
-            })
+            await command_func(self, data_json)
 
     async def chat_message(self, event):
         await self.send(text_data=json.dumps({

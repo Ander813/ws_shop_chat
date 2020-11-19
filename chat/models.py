@@ -25,3 +25,10 @@ class Messages(models.Model):
     sent = models.DateTimeField(auto_now_add=True)
     chat = models.ForeignKey(Chats, related_name='messages', on_delete=models.CASCADE)
     sender = models.ForeignKey(User, related_name='user_massages', on_delete=models.CASCADE, null=True)
+
+
+class EmailMessages(models.Model):
+    email = models.EmailField()
+    content = models.TextField()
+    sent = models.DateTimeField(auto_now_add=True)
+    replied = models.BooleanField(default=False)
